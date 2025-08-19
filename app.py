@@ -142,15 +142,17 @@ def create_oauth_flow():
         st.error("Google OAuth credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.")
         st.stop()
     
+    # For cloud deployment, always use the cloud URL
+    redirect_uri = "https://y-tnow.streamlit.app"
+    if not st.secrets["general"].get("PRODUCTION", False):
+        # For local development
+        redirect_uri = "http://localhost:8501"
+    
     flow = Flow.from_client_config(
         client_config=CLIENT_CONFIG,
         scopes=SCOPES,
-        redirect_uri=CLIENT_CONFIG["web"]["redirect_uris"][0]
+        redirect_uri=redirect_uri
     )
-    
-    # Enable insecure transport for local development
-    if not os.getenv("PRODUCTION"):
-        flow.redirect_uri = flow.redirect_uri.replace('https://', 'http://')
     
     return flow
 
@@ -289,28 +291,25 @@ with col2:
     else:
         # Single sign-in button that opens auth in same tab
         if st.button("Sign in with Google"):
-            flow = create_oauth_flow()
-            authorization_url, state = flow.authorization_url(
-                access_type='offline',
-                include_granted_scopes='true',
-                prompt='consent'
-            )
-            st.session_state['oauth_state'] = state
-            # Robust same-tab redirect (works even though components render in an iframe)
-            st.markdown(
-                f"""
-                <meta http-equiv="refresh" content="0; url={authorization_url}">
-                <script>
-                  try {{
-                    window.top.location.href = '{authorization_url}';
-                  }} catch (e) {{
-                    window.location.href = '{authorization_url}';
-                  }}
-                </script>
-                <p>If you are not redirected, <a href="{authorization_url}">click here to continue</a>.</p>
-                """,
-                unsafe_allow_html=True
-            )
+            try:
+                flow = create_oauth_flow()
+                authorization_url, state = flow.authorization_url(
+                    access_type='offline',
+                    include_granted_scopes='true',
+                    prompt='consent'
+                )
+                st.session_state['oauth_state'] = state
+                
+                # Simple redirect
+                st.markdown(f'<meta http-equiv="refresh" content="0;url={authorization_url}">', unsafe_allow_html=True)
+                st.markdown(f'''
+                    ### Redirecting to Google Sign In...
+                    If you are not redirected automatically, [click here]({authorization_url})
+                    ''')
+                st.stop()
+            except Exception as e:
+                st.error(f"Error during authentication setup: {str(e)}")
+                st.stop()
 
 
 def _windows_paths():
