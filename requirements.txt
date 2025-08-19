@@ -1,0 +1,10 @@
+streamlit
+yt-dlp
+ffmpeg-python
+tqdm==4.65.0
+youtube-dl-cookies-from-browser
+requests
+google-auth-oauthlib
+google-auth
+requests-oauthlib
+Flask-Session
