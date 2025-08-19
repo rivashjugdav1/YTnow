@@ -18,7 +18,6 @@ os.environ["PATH"] = FFMPEG_BIN_DIR + os.pathsep + os.environ.get("PATH", "")
 try:
     from yt_dlp import YoutubeDL
 except Exception:
-    import subprocess
     subprocess.check_call([sys.executable, "-m", "pip", "install", "yt-dlp"])
     from yt_dlp import YoutubeDL
 
@@ -39,9 +38,9 @@ YDL_OPTS = {
 
 def get_chrome_cookies():
     """Get cookies from Chrome by creating a fresh cookie file."""
+    import datetime
+    import browser_cookie3
     try:
-        import datetime
-        import browser_cookie3
         
         # Create a temporary cookie file
         cookie_file = os.path.join(tempfile.gettempdir(), 'youtube_cookies.txt')
@@ -67,27 +66,8 @@ def get_chrome_cookies():
             
             return cookie_file
         except Exception as e:
-            st.write(f"Debug: Could not extract Chrome cookies: {e}")
-            
-            # Fallback to basic consent cookies
-            current_time = int(datetime.datetime.now().timestamp())
-            try:
-                with open(cookie_file, 'w', encoding='utf-8') as f:
-                    f.write(f'''# Netscape HTTP Cookie File
-# https://curl.haxx.se/rfc/cookie_spec.html
-# This is a generated file!  Do not edit.
-
-.youtube.com\tTRUE\t/\tFALSE\t{current_time + 3600}\tCONSENT\tYES+cb.20240101-18-p0.en+FX
-.youtube.com\tTRUE\t/\tFALSE\t{current_time + 3600}\tGPS\t1
-.youtube.com\tTRUE\t/\tFALSE\t{current_time + 3600}\tVISITOR_INFO1_LIVE\tdefault
-.youtube.com\tTRUE\t/\tFALSE\t{current_time + 3600}\tYSC\tdefault
-.youtube.com\tTRUE\t/\tFALSE\t{current_time + 3600}\tPREF\tf6=8''')
-                return cookie_file
-            except Exception as write_error:
-                st.write(f"Debug: Could not write fallback cookie file: {write_error}")
-                return None
+            return None
     except Exception as e:
-        st.write(f"Debug: Error setting up cookies: {e}")
         return None
 
 # Initialize session state for video info
@@ -112,66 +92,7 @@ def extract_video_info(url):
         return None
     return None
 
-# Check for OAuth callback parameters
-params = st.query_params
-if 'code' in params and 'state' in params:
-    try:
-        flow = create_oauth_flow()
-        # Reconstruct the full callback URL with all parameters
-        callback_url = "&".join([f"{k}={v}" for k, v in params.items()])
-        full_url = f"http://127.0.0.1:8501?{callback_url}"
-        flow.fetch_token(authorization_response=full_url)
-        credentials = flow.credentials
-        
-        # Store credentials in session state
-        st.session_state['credentials'] = {
-            'token': credentials.token,
-            'refresh_token': credentials.refresh_token,
-            'token_uri': credentials.token_uri,
-            'client_id': credentials.client_id,
-            'client_secret': credentials.client_secret,
-            'scopes': credentials.scopes
-        }
-        
-        # Get user info
-        userinfo_url = "https://www.googleapis.com/oauth2/v1/userinfo"
-        headers = {'Authorization': f'Bearer {credentials.token}'}
-        response = requests.get(userinfo_url, headers=headers)
-        if response.ok:
-            st.session_state['user_info'] = response.json()
-        
-        # Clear the URL parameters and reload the page
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"OAuth callback failed: {e}")
 
-def get_youtube_client():
-    if 'credentials' not in st.session_state or not st.session_state['credentials']:
-        return None
-    
-    credentials_dict = st.session_state['credentials']
-    credentials = Credentials(
-        token=credentials_dict['token'],
-        refresh_token=credentials_dict['refresh_token'],
-        token_uri=credentials_dict['token_uri'],
-        client_id=credentials_dict['client_id'],
-        client_secret=credentials_dict['client_secret'],
-        scopes=credentials_dict['scopes']
-    )
-    
-    if not credentials or not credentials.valid:
-        if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(GoogleRequest())
-            st.session_state['credentials'] = {
-                'token': credentials.token,
-                'refresh_token': credentials.refresh_token,
-                'token_uri': credentials.token_uri,
-                'client_id': credentials.client_id,
-                'client_secret': credentials.client_secret,
-                'scopes': credentials.scopes
-            }
-    return credentials
 
 def extract_video_id(youtube_url: str) -> str | None:
     try:
@@ -200,76 +121,13 @@ st.title("YouTube Downloader")
 st.caption("Select video quality and FPS or extract MP3 with chosen bitrate. Progress shows percent and time remaining.")
 
 
-def _windows_paths():
-    local = os.environ.get('LOCALAPPDATA') or ''
-    roaming = os.environ.get('APPDATA') or ''
-    return local, roaming
 
-def cleanup_cookies():
-    try:
-        cookies_file = os.path.join(os.path.dirname(__file__), 'youtube_cookies.txt')
-        if os.path.exists(cookies_file):
-            os.remove(cookies_file)
-    except Exception:
-        pass
-
-
-# Remove the duplicate callback handler since we now handle it in the main flow
-
-def get_chrome_profiles():
-    local, _ = _windows_paths()
-    chrome_path = os.path.join(local, 'Google', 'Chrome', 'User Data')
-    profiles = []
-    
-    if os.path.exists(chrome_path):
-        try:
-            for item in os.listdir(chrome_path):
-                if item.startswith('Profile ') or item == 'Default':
-                    profile_path = os.path.join(chrome_path, item)
-                    if os.path.isdir(profile_path) and os.path.exists(os.path.join(profile_path, 'Cookies')):
-                        profiles.append(item)
-        except Exception:
-            pass
-    return profiles
-
-def get_chromium_profiles(browser_key: str) -> list[str]:
-    local, roaming = _windows_paths()
-    base = None
-    if browser_key == 'chrome':
-        base = os.path.join(local, 'Google', 'Chrome', 'User Data')
-    elif browser_key == 'edge':
-        base = os.path.join(local, 'Microsoft', 'Edge', 'User Data')
-    elif browser_key == 'brave':
-        base = os.path.join(local, 'BraveSoftware', 'Brave-Browser', 'User Data')
-    elif browser_key in {'opera', 'opera_gx'}:
-        base = os.path.join(roaming, 'Opera Software', 'Opera Stable')
-    if not base or not os.path.isdir(base):
-        return []
-    names: list[str] = []
-    try:
-        # Put 'Default' first if exists
-        default_path = os.path.join(base, 'Default')
-        if os.path.isdir(default_path):
-            names.append('Default')
-        for item in os.listdir(base):
-            if item.startswith('Profile '):
-                profile_path = os.path.join(base, item)
-                if os.path.isdir(profile_path):
-                    names.append(item)
-    except Exception:
-        return names
-    # Dedupe while preserving order
-    seen = set()
-    ordered: list[str] = []
-    for n in names:
-        if n not in seen:
-            seen.add(n)
-            ordered.append(n)
-    return ordered
-
+# Simple browser detection
 def detect_local_browsers() -> list[str]:
+    """Return a list of browsers available on the system"""
     detected: list[str] = []
-    local, roaming = _windows_paths()
+    local = os.environ.get('LOCALAPPDATA', '')
+    roaming = os.environ.get('APPDATA', '')
     # Only include browsers that yt-dlp supports
     candidates: list[tuple[str, str]] = [
         ("chrome", os.path.join(local, 'Google', 'Chrome', 'User Data')),
@@ -332,10 +190,9 @@ if get_info_clicked:
         except Exception as e:
             info_status.write("")
             info_progress.progress(0)
-            cleanup_cookies()
             msg = str(e).lower()
             if ('age-restricted' in msg) or ('sign in to confirm your age' in msg):
-                st.warning("Sign in to download age-restricted video.")
+                st.warning("This video is age-restricted and requires sign-in.")
             else:
                 st.error("Failed to fetch video info.")
 
@@ -458,10 +315,6 @@ if info:
                 pass
 
         try:
-            # Check if user is signed in
-            if not st.session_state.get('credentials'):
-                st.warning("⚠️ Please sign in with Google to download age-restricted videos")
-                st.stop()
 
             if mode == "Audio Only (MP3)":
                 ydl_opts = {
@@ -542,7 +395,7 @@ if info:
                 }
             })
 
-            # Use local browser cookies (fixes age-restricted videos)
+            # Try to use cookies from browsers
             try:
                 available_browsers = detect_local_browsers()
                 if available_browsers:
@@ -554,72 +407,14 @@ if info:
 
             last_downloaded = None
 
-            def _attempt_download(opts):
-                with YoutubeDL(opts) as ydl:
-                    status_text.write("Downloading...")
-                    before = set(os.listdir(output_dir))
-                    ydl.download([url])
-                    return before
-
-            tried_browsers: list[str] = []
-            download_succeeded = False
+            # Download with yt-dlp
             try:
-                before = _attempt_download(ydl_opts)
-                download_succeeded = True
-            except Exception as e:
-                err_msg = str(e)
-                # If cookie DB is locked OR DPAPI decryption fails, try alternatives
-                if (
-                    ('Could not copy' in err_msg and 'cookie database' in err_msg) or
-                    ('Failed to decrypt with DPAPI' in err_msg)
-                ):
-                    chosen = None
-                    cfb = ydl_opts.get('cookiesfrombrowser')
-                    if isinstance(cfb, (list, tuple)) and cfb:
-                        chosen = cfb[0]
-                    if chosen:
-                        tried_browsers.append(chosen)
-                    for b in [b for b in detect_local_browsers() if b not in tried_browsers]:
-                        chromium_like = {"chrome", "edge", "brave", "chromium", "opera", "opera_gx"}
-                        if b in chromium_like:
-                            profiles_to_try = get_chromium_profiles(b) or ['Default']
-                            attempts = [None] + profiles_to_try
-                            for prof in attempts:
-                                if prof is None:
-                                    ydl_opts['cookiesfrombrowser'] = (b,)
-                                else:
-                                    ydl_opts['cookiesfrombrowser'] = (b, prof)
-                                try:
-                                    before = _attempt_download(ydl_opts)
-                                    download_succeeded = True
-                                    break
-                                except Exception as inner_e:
-                                    if 'could not find' in str(inner_e).lower():
-                                        continue
-                                    else:
-                                        continue
-                            if download_succeeded:
-                                break
-                        else:
-                            ydl_opts['cookiesfrombrowser'] = (b,)
-                            try:
-                                before = _attempt_download(ydl_opts)
-                                download_succeeded = True
-                                break
-                            except Exception:
-                                pass
-                    if not download_succeeded:
-                        # Last resort: try without cookies
-                        ydl_opts.pop('cookiesfrombrowser', None)
-                        before = _attempt_download(ydl_opts)
-                        download_succeeded = True
-                else:
-                    # Friendly message if age restriction triggered
-                    if ('sign in to confirm your age' in err_msg.lower()) or ('age-restricted' in err_msg.lower()):
-                        st.warning("Sign in to download age-restricted video.")
-                        st.stop()
-                    raise
-                # Try filename from hook first
+                before = set(os.listdir(output_dir))
+                with YoutubeDL(ydl_opts) as ydl:
+                    status_text.write("Downloading...")
+                    ydl.download([url])
+                
+                # Find the downloaded file
                 candidate = downloaded_path.get('path')
                 if candidate and os.path.exists(candidate):
                     last_downloaded = candidate
@@ -629,6 +424,12 @@ if info:
                     if new_files:
                         new_files.sort(key=lambda f: os.path.getmtime(os.path.join(output_dir, f)), reverse=True)
                         last_downloaded = os.path.join(output_dir, new_files[0])
+            except Exception as e:
+                err_msg = str(e).lower()
+                if 'sign in to confirm your age' in err_msg or 'age-restricted' in err_msg:
+                    st.warning("This video is age-restricted and requires sign-in.")
+                    st.stop()
+                raise
 
             # Completed UI
             progress_bar.progress(100)
