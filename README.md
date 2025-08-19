@@ -5,43 +5,13 @@ A web application that allows users to download YouTube videos in high quality (
 ## Features
 
 - Simple, user-friendly web interface
-- High-quality video downloads (720p 60fps)
+- High-quality video downloads (1080p 60fps)
+- Download videos directly to mp3 format(Perfect for music)
 - Video information preview with thumbnails
 - Progress tracking
 - Direct browser downloads
 - Accessible from any device with a web browser
 
-## Deployment Instructions
-
-### Option 1: Deploy to Hugging Face Spaces (Recommended)
-
-1. Create a [Hugging Face account](https://huggingface.co/join)
-2. Go to [Hugging Face Spaces](https://huggingface.co/spaces)
-3. Click "Create New Space"
-4. Choose:
-   - Owner: Your username
-   - Space name: youtube-downloader (or any name you prefer)
-   - License: Choose appropriate license
-   - SDK: Streamlit
-5. Once created, upload these files to your Space:
-   - `app.py`
-   - `requirements.txt`
-
-The app will automatically deploy and be available at: `https://huggingface.co/spaces/YOUR_USERNAME/YOUR_SPACE_NAME`
-
-### Option 2: Run Locally
-
-1. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-2. Run the app:
-```bash
-streamlit run app.py
-```
-
-3. Open your browser and go to `http://localhost:8501`
 
 ## Note
 
