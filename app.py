@@ -3,18 +3,13 @@ import sys
 import tempfile
 import streamlit as st
 import streamlit.components.v1 as components
-import json
 from downloader import build_dynamic_quality_options, apply_common_ydl_hardening, is_aria2c_available
-from google_auth_oauthlib.flow import Flow
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request as GoogleRequest
 import requests
 from pathlib import Path
-from requests.exceptions import RequestException
 import subprocess
 import shutil
-import sqlite3
 import re
+import os
 
 # Configure ffmpeg path
 FFMPEG_BIN_DIR = os.path.join(os.path.dirname(__file__), 'ffmpeg-master-latest-win64-gpl', 'bin')
@@ -29,51 +24,18 @@ except Exception:
 
 st.set_page_config(page_title="YouTube Downloader", page_icon="🎥", layout="wide")
 
-# OAuth Configuration
-SCOPES = [
-    'openid',
-    'https://www.googleapis.com/auth/userinfo.profile',
-    'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/youtube.force-ssl'
-]
-
-# Get OAuth credentials from Streamlit secrets
-try:
-    CLIENT_CONFIG = {
-        "web": {
-            "client_id": st.secrets["general"]["GOOGLE_CLIENT_ID"],
-            "client_secret": st.secrets["general"]["GOOGLE_CLIENT_SECRET"],
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "redirect_uris": [st.secrets["general"].get("OAUTH_REDIRECT_URI", "https://y-tnow.streamlit.app")]
-        }
-    }
-except Exception as e:
-    st.error(f"""
-    Error loading OAuth configuration. Please check your Streamlit secrets configuration.
-    Make sure you have configured the following in your secrets.toml:
-    
-    [general]
-    PRODUCTION = true
-    GOOGLE_CLIENT_ID = "your-client-id"
-    GOOGLE_CLIENT_SECRET = "your-client-secret"
-    OAUTH_REDIRECT_URI = "https://y-tnow.streamlit.app"
-    
-    Current error: {str(e)}
-    """)
-
-# Enable insecure transport for local development
-try:
-    if not st.secrets["general"].get("PRODUCTION", False):
-        os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-        import ssl
-        ssl._create_default_https_context = ssl._create_unverified_context
-except Exception:
-    # If running locally without secrets
-    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-    import ssl
-    ssl._create_default_https_context = ssl._create_unverified_context
+# Configure yt-dlp with enhanced options for all videos
+YDL_OPTS = {
+    'format': 'bestvideo+bestaudio/best',
+    'merge_output_format': 'mp4',
+    'quiet': True,
+    'no_warnings': True,
+    'extract_flat': True,
+    'ignoreerrors': True,
+    'no_color': True,
+    'age_limit': 99,  # Allow age-restricted videos
+    'cookiesfrombrowser': ('chrome',),  # Try to get cookies from Chrome
+}
 
 def get_chrome_cookies():
     """Get cookies from Chrome by creating a fresh cookie file."""
@@ -128,33 +90,27 @@ def get_chrome_cookies():
         st.write(f"Debug: Error setting up cookies: {e}")
         return None
 
-# Initialize session state for auth
-if 'oauth_state' not in st.session_state:
-    st.session_state['oauth_state'] = None
-if 'credentials' not in st.session_state:
-    st.session_state['credentials'] = None
-if 'user_info' not in st.session_state:
-    st.session_state['user_info'] = None
+# Initialize session state for video info
+if 'video_info' not in st.session_state:
+    st.session_state['video_info'] = None
 
-# Function to create Google OAuth flow
-def create_oauth_flow():
-    if not CLIENT_CONFIG["web"]["client_id"] or not CLIENT_CONFIG["web"]["client_secret"]:
-        st.error("Google OAuth credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.")
-        st.stop()
-    
-    # For cloud deployment, always use the cloud URL
-    redirect_uri = "https://y-tnow.streamlit.app"
-    if not st.secrets["general"].get("PRODUCTION", False):
-        # For local development
-        redirect_uri = "http://localhost:8501"
-    
-    flow = Flow.from_client_config(
-        client_config=CLIENT_CONFIG,
-        scopes=SCOPES,
-        redirect_uri=redirect_uri
-    )
-    
-    return flow
+def extract_video_info(url):
+    """Extract video information using yt-dlp"""
+    try:
+        with YoutubeDL(YDL_OPTS) as ydl:
+            video_info = ydl.extract_info(url, download=False)
+            if video_info:
+                return {
+                    'title': video_info.get('title', 'Unknown Title'),
+                    'uploader': video_info.get('uploader', 'Unknown Uploader'),
+                    'duration': int(video_info.get('duration', 0)),
+                    'thumbnail': video_info.get('thumbnail'),
+                    'formats': video_info.get('formats', []),
+                }
+    except Exception as e:
+        st.error(f"Error fetching video info: {str(e)}")
+        return None
+    return None
 
 # Check for OAuth callback parameters
 params = st.query_params
@@ -237,79 +193,11 @@ def extract_video_id(youtube_url: str) -> str | None:
         return None
     return None
 
-def parse_iso8601_duration(iso_duration: str) -> int:
-    # Very small parser for patterns like PT1H2M3S / PT15M / PT45S
-    hours = minutes = seconds = 0
-    if not iso_duration or not iso_duration.startswith('PT'):
-        return 0
-    try:
-        h = re.search(r"(\d+)H", iso_duration)
-        m = re.search(r"(\d+)M", iso_duration)
-        s = re.search(r"(\d+)S", iso_duration)
-        hours = int(h.group(1)) if h else 0
-        minutes = int(m.group(1)) if m else 0
-        seconds = int(s.group(1)) if s else 0
-        return hours * 3600 + minutes * 60 + seconds
-    except Exception:
-        return 0
 
-def fetch_oembed_metadata(youtube_url: str) -> dict | None:
-    try:
-        oembed_url = "https://www.youtube.com/oembed"
-        params = { 'url': youtube_url, 'format': 'json' }
-        resp = requests.get(oembed_url, params=params, timeout=8, headers={
-            'Accept': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36',
-        })
-        if not resp.ok:
-            return None
-        data = resp.json() or {}
-        return {
-            'title': data.get('title'),
-            'uploader': data.get('author_name'),
-            'duration': 0,
-            'thumbnail': data.get('thumbnail_url'),
-            'formats': [],
-        }
-    except Exception:
-        return None
 
-# Create login/logout UI
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.title("YouTube Downloader")
-    st.caption("Select video quality and FPS or extract MP3 with chosen bitrate. Progress shows percent and time remaining.")
-
-with col2:
-    if st.session_state.get('credentials'):
-        user_info = st.session_state.get('user_info', {})
-        st.write(f"Welcome, {user_info.get('name', 'User')}!")
-        if st.button("Logout"):
-            st.session_state['credentials'] = None
-            st.session_state['user_info'] = None
-            st.experimental_rerun()
-    else:
-        # Single sign-in button that opens auth in same tab
-        if st.button("Sign in with Google"):
-            try:
-                flow = create_oauth_flow()
-                authorization_url, state = flow.authorization_url(
-                    access_type='offline',
-                    include_granted_scopes='true',
-                    prompt='consent'
-                )
-                st.session_state['oauth_state'] = state
-                
-                # Simple redirect
-                st.markdown(f'<meta http-equiv="refresh" content="0;url={authorization_url}">', unsafe_allow_html=True)
-                st.markdown(f'''
-                    ### Redirecting to Google Sign In...
-                    If you are not redirected automatically, [click here]({authorization_url})
-                    ''')
-                st.stop()
-            except Exception as e:
-                st.error(f"Error during authentication setup: {str(e)}")
-                st.stop()
+# Create header
+st.title("YouTube Downloader")
+st.caption("Select video quality and FPS or extract MP3 with chosen bitrate. Progress shows percent and time remaining.")
 
 
 def _windows_paths():
@@ -428,92 +316,13 @@ if get_info_clicked:
             
             # Get cookies for authentication
             cookie_file = get_chrome_cookies()
+            if cookie_file:
+                YDL_OPTS['cookiefile'] = cookie_file
             
-            # Configure yt-dlp options with more detailed error handling and cookie support
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': False,  # Enable warnings to see potential issues
-                'noplaylist': True,
-                'extract_flat': True,  # Only extract video metadata
-                'format': 'best',  # Request best format for initial metadata
-                'youtube_include_dash_manifest': False,  # Skip DASH manifest loading
-                'ignoreerrors': True,  # Continue on error
-                'no_color': True,  # Disable ANSI color codes
-                'cookiesfrombrowser': ('chrome',),  # Try to get cookies from Chrome
-                'cookiefile': cookie_file if cookie_file else None,  # Use our generated cookie file
-                'age_limit': 99,  # Allow age-restricted videos
-            }
-            
-            # Build info using the best source:
-            # - If signed in: use YouTube Data API (avoids cookie/yt-dlp age prompts during info fetch)
-            # - If not signed in: use yt-dlp unauthenticated
-            credentials = get_youtube_client()
-            if credentials:
-                vid = extract_video_id(url)
-                if vid:
-                    api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id={vid}"
-                    headers = { 'Authorization': f"Bearer {credentials.token}" }
-                    try:
-                        resp = requests.get(api_url, headers=headers, timeout=10)
-                        if not resp.ok:
-                            raise Exception("API not enabled or error occurred")
-                        data = resp.json() or {}
-                        items = data.get('items') or []
-                        if items:
-                            item = items[0]
-                            snippet = item.get('snippet', {})
-                            content = item.get('contentDetails', {})
-                            info = {
-                                'title': snippet.get('title'),
-                                'uploader': snippet.get('channelTitle'),
-                                'duration': parse_iso8601_duration(content.get('duration', '')),
-                                'thumbnail': (snippet.get('thumbnails', {}).get('high', {}) or snippet.get('thumbnails', {}).get('default', {})).get('url'),
-                                'formats': [],
-                            }
-                        else:
-                            raise Exception("No items found in API response")
-                    except Exception:
-                        info = None  # Reset info to ensure fallback
-                else:
-                    info = None
-            
-            # If API failed, fall back to yt-dlp
+            info = extract_video_info(url)
             if not info:
-                info_status.write("Fetching video information...")
-                try:
-                    with YoutubeDL(ydl_opts) as ydl:
-                        video_info = ydl.extract_info(url, download=False)
-                        if video_info:
-                            info = {
-                                'title': video_info.get('title'),
-                                'uploader': video_info.get('uploader'),
-                                'duration': int(video_info.get('duration', 0)),
-                                'thumbnail': video_info.get('thumbnail'),
-                                'formats': video_info.get('formats', []),
-                            }
-                        else:
-                            st.error("Could not fetch video information.")
-                except Exception as ydl_error:
-                    st.write(f"Debug: yt-dlp error: {str(ydl_error)}")
-                
-            # If both API and yt-dlp failed, try oEmbed as last resort
-            if not info:
-                    o = fetch_oembed_metadata(url)
-                    if o:
-                        info = o
-                    else:
-                        st.error("Failed to fetch video info.")
-                        st.stop()
-            else:
-                try:
-                    with YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                except Exception as e:
-                    msg_low = str(e).lower()
-                    if ('age-restricted' in msg_low) or ('sign in to confirm your age' in msg_low):
-                        st.warning("Sign in to download age-restricted video.")
-                        st.stop()
-                    raise
+                st.error("Could not fetch video information. Please check the URL and try again.")
+                st.stop()
                 
             info_progress.progress(60)
             _ = info.get('formats', [])
