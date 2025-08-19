@@ -30,8 +30,6 @@ except Exception:
 st.set_page_config(page_title="YouTube Downloader", page_icon="🎥", layout="wide")
 
 # OAuth Configuration
-CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), 
-    'client_secret_404561069273-v3q9cju9t3lhn69m9jt8igbg9dvc5ntl.apps.googleusercontent.com.json')
 SCOPES = [
     'openid',
     'https://www.googleapis.com/auth/userinfo.profile',
@@ -39,11 +37,23 @@ SCOPES = [
     'https://www.googleapis.com/auth/youtube.force-ssl'
 ]
 
+# Get OAuth credentials from environment variables
+CLIENT_CONFIG = {
+    "web": {
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "redirect_uris": [os.getenv("OAUTH_REDIRECT_URI", "https://y-tnow.streamlit.app")]
+    }
+}
+
 # Enable insecure transport for local development
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-# Also need to disable SSL verification for local development
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
+if not os.getenv("PRODUCTION"):
+    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    import ssl
+    ssl._create_default_https_context = ssl._create_unverified_context
 
 def get_chrome_cookies():
     """Get cookies from Chrome by creating a fresh cookie file."""
@@ -108,13 +118,20 @@ if 'user_info' not in st.session_state:
 
 # Function to create Google OAuth flow
 def create_oauth_flow():
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE,
+    if not CLIENT_CONFIG["web"]["client_id"] or not CLIENT_CONFIG["web"]["client_secret"]:
+        st.error("Google OAuth credentials not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.")
+        st.stop()
+    
+    flow = Flow.from_client_config(
+        client_config=CLIENT_CONFIG,
         scopes=SCOPES,
-        redirect_uri="http://127.0.0.1:8501"  # Redirect to main page
+        redirect_uri=CLIENT_CONFIG["web"]["redirect_uris"][0]
     )
+    
     # Enable insecure transport for local development
-    flow.redirect_uri = flow.redirect_uri.replace('https://', 'http://')
+    if not os.getenv("PRODUCTION"):
+        flow.redirect_uri = flow.redirect_uri.replace('https://', 'http://')
+    
     return flow
 
 # Check for OAuth callback parameters
