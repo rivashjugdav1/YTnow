@@ -37,20 +37,40 @@ SCOPES = [
     'https://www.googleapis.com/auth/youtube.force-ssl'
 ]
 
-# Get OAuth credentials from environment variables
-CLIENT_CONFIG = {
-    "web": {
-        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "redirect_uris": [os.getenv("OAUTH_REDIRECT_URI", "https://y-tnow.streamlit.app")]
+# Get OAuth credentials from Streamlit secrets
+try:
+    CLIENT_CONFIG = {
+        "web": {
+            "client_id": st.secrets["general"]["GOOGLE_CLIENT_ID"],
+            "client_secret": st.secrets["general"]["GOOGLE_CLIENT_SECRET"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": [st.secrets["general"].get("OAUTH_REDIRECT_URI", "https://y-tnow.streamlit.app")]
+        }
     }
-}
+except Exception as e:
+    st.error(f"""
+    Error loading OAuth configuration. Please check your Streamlit secrets configuration.
+    Make sure you have configured the following in your secrets.toml:
+    
+    [general]
+    PRODUCTION = true
+    GOOGLE_CLIENT_ID = "your-client-id"
+    GOOGLE_CLIENT_SECRET = "your-client-secret"
+    OAUTH_REDIRECT_URI = "https://y-tnow.streamlit.app"
+    
+    Current error: {str(e)}
+    """)
 
 # Enable insecure transport for local development
-if not os.getenv("PRODUCTION"):
+try:
+    if not st.secrets["general"].get("PRODUCTION", False):
+        os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+        import ssl
+        ssl._create_default_https_context = ssl._create_unverified_context
+except Exception:
+    # If running locally without secrets
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
     import ssl
     ssl._create_default_https_context = ssl._create_unverified_context
